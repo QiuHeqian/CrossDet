@@ -6,6 +6,14 @@ boxes or a set of points to represent objects. However, these methods either int
 * MMDetection
 * pytorch
 * Please see [get_started.md](https://github.com/QiuHeqian/CrossDet/blob/master/docs/get_started.md) for installation and the basic usage of MMDetection.
+* Clone the repository and then install it:
+```
+git clone https://github.com/QiuHeqian/CrossDet.git  
+cd CrossDet  
+pip install -v -e .  # or "python setup.py develop"  
+cd ivipcv  
+python setup.py develop
+```
 ## Train  
 ```
 # assume that you are under the root directory of this project,
