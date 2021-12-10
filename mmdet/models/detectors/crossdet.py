@@ -4,7 +4,7 @@ from .single_stage import SingleStageDetector
 
 @DETECTORS.register_module()
 class CrossDet(SingleStageDetector):
-    """StarNet.
+    """CrossDet.
     ......
         """
     def __init__(self,

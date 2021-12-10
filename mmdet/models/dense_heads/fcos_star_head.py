@@ -1,10 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from mmcv.cnn import Scale, normal_init
+from mmcv.cnn import Scale, normal_init,bias_init_with_prob
 from mmcv.runner import force_fp32
 
-from mmdet.core import distance2bbox, multi_apply, multiclass_nms,StarGenerator
+from mmdet.core import distance2bbox,build_assigner, build_sampler, multi_apply, multiclass_nms,StarGenerator
 from ..builder import HEADS, build_loss
 from .anchor_free_head import AnchorFreeHead
 from ivipcv.ops import StarPool
@@ -74,8 +74,11 @@ class FCOSHead(AnchorFreeHead):
                      gamma=2.0,
                      alpha=0.25,
                      loss_weight=1.0),
-                 loss_bbox_init=dict(type='IoULoss', loss_weight=1.0),
-                 loss_bbox_refine=dict(type='IoULoss', loss_weight=1.0),
+                 # loss_bbox=dict(type='IoULoss', loss_weight=1.0),
+                 loss_bbox_init=dict(
+                     type='SmoothL1Loss', beta=1.0 / 9.0, loss_weight=0.5),
+                 loss_bbox_refine=dict(
+                     type='SmoothL1Loss', beta=1.0 / 9.0, loss_weight=1.0),
                  loss_centerness=dict(
                      type='CrossEntropyLoss',
                      use_sigmoid=True,
@@ -96,22 +99,88 @@ class FCOSHead(AnchorFreeHead):
             loss_bbox_refine=loss_bbox_refine,
             norm_cfg=norm_cfg,
             **kwargs)
+        self.sampling = False
+        if self.train_cfg:
+            # self.init_assigner = build_assigner(self.train_cfg.init.assigner)
+            # self.refine_assigner = build_assigner(self.train_cfg.refine.assigner)
+            self.assigner = build_assigner(self.train_cfg.assigner)
+            # SSD sampling=False so use PseudoSampler
+            sampler_cfg = dict(type='PseudoSampler')
+            self.sampler = build_sampler(sampler_cfg, context=self)
         self.loss_centerness = build_loss(loss_centerness)
+        self.loss_bbox_init = build_loss(loss_bbox_init)
+        self.loss_bbox_refine = build_loss(loss_bbox_refine)
 
     def _init_layers(self):
         """Initialize layers of the head."""
         super()._init_layers()
         self.conv_centerness = nn.Conv2d(self.feat_channels, 1, 3, padding=1)
         self.scales = nn.ModuleList([Scale(1.0) for _ in self.strides])
-        self.star_pooling_layers = nn.ModuleList(
-            [StarPool(spatial_scale=1 / s, pool_mode='100000') for s in self.strides])
+        self.relu = nn.ReLU(inplace=True)
+        self.strides = [s[0] for s in self.strides]
+        self.pool_mode_num = 1
+        self.star_pooling_layers_max = nn.ModuleList(
+            [StarPool(spatial_scale=1 / s, pool_mode='1000000', subsection=1) for s in self.strides])
+        self.star_pooling_layers_sum = nn.ModuleList(
+            [StarPool(spatial_scale=1 / s, pool_mode='1000000', subsection=1) for s in self.strides])
+        # self.star_pool_reg_conv_pre_init = nn.Conv2d(self.feat_channels, int(self.feat_channels / 1), 3, 1, 1)
+        # self.star_pool_reg_conv_pre_init = ConvModule(self.feat_channels, int(self.feat_channels / 1), 3, 1, 1,
+        #                                               conv_cfg=self.conv_cfg, norm_cfg=self.norm_cfg)
+        self.star_pool_cls_conv_pre = nn.Conv2d(self.feat_channels, int(self.feat_channels / 2), 3, 1, 1)
+        # self.star_pool_cls_conv_pre = ConvModule(self.feat_channels, int(self.feat_channels / 1), 3, 1, 1,
+        #                                          conv_cfg=self.conv_cfg, norm_cfg=self.norm_cfg)
+        self.star_pool_reg_conv_init_row = nn.Conv2d(self.feat_channels * self.pool_mode_num,
+                                                     self.feat_channels, 3, 1, 1)
+        # self.star_pool_reg_conv_init_row = ConvModule(self.feat_channels * self.pool_mode_num,
+        #                                               self.feat_channels, 3, 1, 1,conv_cfg=self.conv_cfg,norm_cfg=self.norm_cfg)
+        self.star_pool_reg_conv_init_col = nn.Conv2d(self.feat_channels * self.pool_mode_num,
+                                                     self.feat_channels, 3, 1, 1)
+        # self.star_pool_reg_conv_init_col = ConvModule(self.feat_channels * self.pool_mode_num,
+        #                                               self.feat_channels, 3, 1, 1, conv_cfg=self.conv_cfg,
+        #                                               norm_cfg=self.norm_cfg)
+        self.star_pool_cls_conv = nn.Conv2d(self.feat_channels * self.pool_mode_num, self.feat_channels,
+                                            3, 1, 1)
+        # self.star_pool_cls_conv = ConvModule(self.feat_channels * self.pool_mode_num, self.feat_channels,
+        #                                     3, 1, 1,conv_cfg=self.conv_cfg,norm_cfg=self.norm_cfg)
+        self.star_cls_out = nn.Conv2d(self.feat_channels,
+                                      self.cls_out_channels, 1, 1, 0)
+        self.star_reg_init_out_row = nn.Conv2d(self.feat_channels,
+                                               2, 1, 1, 0)
+        self.star_reg_init_out_col = nn.Conv2d(self.feat_channels,
+                                               2, 1, 1, 0)
+        # self.star_pool_reg_conv_pre_refine = nn.Conv2d(self.feat_channels, int(self.feat_channels / 1), 3, 1,
+        #                                                1)
+        # self.star_pool_reg_conv_pre_refine = ConvModule(self.feat_channels, int(self.feat_channels / 1), 3, 1,
+        #                                                1,conv_cfg=self.conv_cfg,norm_cfg=self.norm_cfg)
+        self.star_pool_reg_conv_refine_row = nn.Conv2d(self.feat_channels * self.pool_mode_num,
+                                                       self.feat_channels, 3, 1, 1)
+        # self.star_pool_reg_conv_refine_row = ConvModule(self.feat_channels * self.pool_mode_num,
+        #                                                self.feat_channels, 3, 1, 1,conv_cfg=self.conv_cfg,norm_cfg=self.norm_cfg)
+        self.star_pool_reg_conv_refine_col = nn.Conv2d(self.feat_channels * self.pool_mode_num,
+                                                       self.feat_channels, 3, 1, 1)
+        # self.star_pool_reg_conv_refine_col = ConvModule(self.feat_channels * self.pool_mode_num,
+        #                                                self.feat_channels, 3, 1, 1,conv_cfg=self.conv_cfg,norm_cfg=self.norm_cfg)
+        self.star_reg_refine_conv = nn.Conv2d(self.feat_channels,
+                                              self.feat_channels, 3, 1, 1)
+        # self.star_reg_refine_conv = ConvModule(self.feat_channels, self.feat_channels, 3, 1, 1, conv_cfg=self.conv_cfg,
+        #                                                 norm_cfg=self.norm_cfg)
+        self.star_reg_refine_out_row = nn.Conv2d(self.feat_channels,
+                                                 2, 1, 1, 0)
+        self.star_reg_refine_out_col = nn.Conv2d(self.feat_channels,
+                                                 2, 1, 1, 0)
+
 
     def init_weights(self):
         """Initialize weights of the head."""
         super().init_weights()
         normal_init(self.conv_centerness, std=0.01)
+        bias_cls = bias_init_with_prob(0.01)
+        normal_init(self.star_cls_out, std=0.01, bias=bias_cls)
+        normal_init(self.star_reg_init_out_row, std=0.01)
+        normal_init(self.star_reg_init_out_col, std=0.01)
+        normal_init(self.conv_centerness, std=0.01)
 
-    def forward(self, feats):
+    def forward(self, feats,img_metas):
         """Forward features from the upstream network.
 
         Args:
@@ -129,10 +198,9 @@ class FCOSHead(AnchorFreeHead):
                 centernesses (list[Tensor]): Centerss for each scale level, \
                     each is a 4D-tensor, the channel number is num_points * 1.
         """
-        return multi_apply(self.forward_single, feats, self.scales,
-                           self.strides,self.star_pooling_layers)
+        return multi_apply(self.forward_single, feats, img_metas,self.star_pooling_layers_max,self.star_pooling_layers_sum,self.strides,self.scales)
 
-    def forward_single(self, x, scale, stride,star_pooling_layers,img_metas):
+    def forward_single(self, x, img_metas,star_pooling_layers_max,star_pooling_layers_sum,stride,scale):
         """Forward features of a single scale levle.
 
         Args:
@@ -148,283 +216,122 @@ class FCOSHead(AnchorFreeHead):
                 predictions of input feature maps.
         """
         cls_score, bbox_pred, cls_feat, reg_feat = super().forward_single(x)
-
-        featmap_sizes=x.size()[-2:]
-        device = x[0].device
-
-        stars_init, valid_flag = self.get_stars(featmap_sizes,
-                                                img_metas, device, stride)  # edit
-
-        reg_feat_pre_pool = self.star_pool_reg_conv_pre_init(reg_feat)
-        # reg_feat_pre_pool_weight=F.softmax(self.star_pool_reg_conv_pre_init_weight(reg_feat).view(batch,channel,-1),dim=2).reshape(batch,channel,featmap_sizes[0],featmap_sizes[1])
-        reg_feat_pre_pool = reg_feat * (F.sigmoid(reg_feat_pre_pool) * 1.0).exp()
-
-        stars_init_convert = self.convertstars(torch.stack(stars_init, dim=0), img_metas)
-        star_init_reg_feat_pool = star_pooling_layers(reg_feat_pre_pool, stars_init_convert)
-        batch = x.size()[0]
-        channel = x.size()[1]
-        star_init_reg_feat_pool_all = star_init_reg_feat_pool.reshape(batch, int(channel / 1), 2, self.pool_mode_num,
-                                                                      featmap_sizes[0], featmap_sizes[1])
-        star_init_reg_feat_pool_row = star_init_reg_feat_pool_all[:, :, 0, :, :, :].reshape(batch, -1, featmap_sizes[0],
-                                                                                            featmap_sizes[1])
-        star_init_reg_feat_pool_col = star_init_reg_feat_pool_all[:, :, 1, :, :, :].reshape(batch, -1, featmap_sizes[0],
-                                                                                            featmap_sizes[1])
-        star_init_reg_feat_pool_row = self.relu(
-            self.star_pool_reg_conv_init_row(star_init_reg_feat_pool_row) + reg_feat)
-        star_init_reg_feat_pool_col = self.relu(
-            self.star_pool_reg_conv_init_col(star_init_reg_feat_pool_col) + reg_feat)
-        reg_out_init_row = self.star_reg_init_out_row(star_init_reg_feat_pool_row)
-        reg_out_init_col = self.star_reg_init_out_col(star_init_reg_feat_pool_col)
-        # star_init_reg_feat= self.relu(self.star_reg_conv_init(star_init_reg_feat_pool_sum)+reg_feat)
-        reg_out_init = torch.stack((reg_out_init_row[:, 0, :, :], reg_out_init_col[:, 0, :, :],
-                                    reg_out_init_row[:, 1, :, :], reg_out_init_col[:, 1, :, :]), dim=1)
-        # reg_out_init = self.star_reg_init_out(reg_feat)  # szc
-        #
-
-        reg_out_init_star = self.offset_to_stars(torch.stack(stars_init, dim=0).detach(),
-                                                 reg_out_init.permute(0, 2, 3, 1), img_metas,
-                                                 self.target_means_init, self.target_stds_init
-                                                 )
-        reg_out_init_star_convert = self.convertstars(reg_out_init_star, img_metas)
-
-        cls_feat_pre_pool = self.star_pool_cls_conv_pre(cls_feat)
-        cls_feat_pre_pool = cls_feat * (F.sigmoid(cls_feat_pre_pool) * 1.0).exp()
-        star_init_cls_feat_pool = star_pooling_layers(cls_feat_pre_pool, reg_out_init_star_convert)
-        star_init_cls_feat_pool_all = star_init_cls_feat_pool.reshape(batch, int(channel / 1), 2, self.pool_mode_num,
-                                                                      featmap_sizes[0],
-                                                                      featmap_sizes[1])
-        star_init_cls_feat_pool_row = star_init_cls_feat_pool_all[:, :, 0, :, :, :].reshape(batch, -1, featmap_sizes[0],
-                                                                                            featmap_sizes[1])
-        star_init_cls_feat_pool_col = star_init_cls_feat_pool_all[:, :, 1, :, :, :].reshape(batch, -1, featmap_sizes[0],
-                                                                                            featmap_sizes[1])
-
-        star_init_cls_feat_pool = self.relu(
-            self.star_pool_cls_conv(star_init_cls_feat_pool_row + star_init_cls_feat_pool_col) + cls_feat)
-        cls_out = self.star_cls_out(star_init_cls_feat_pool)
-
-        reg_feat_refine = self.star_reg_refine_conv(reg_feat)
-
-        reg_feat_pre_pool_refine = self.star_pool_reg_conv_pre_refine(reg_feat_refine)
-        reg_feat_pre_pool_refine = reg_feat_refine * (F.sigmoid(reg_feat_pre_pool_refine) * 1.0).exp()
-        star_refine_reg_feat_pool = star_pooling_layers(reg_feat_pre_pool_refine, reg_out_init_star_convert)
-        star_refine_reg_feat_pool_all = star_refine_reg_feat_pool.reshape(batch, int(channel / 1), 2,
-                                                                          self.pool_mode_num, featmap_sizes[0],
-                                                                          featmap_sizes[1])
-        star_refine_reg_feat_pool_row = star_refine_reg_feat_pool_all[:, :, 0, :, :, :].reshape(batch, -1,
-                                                                                                featmap_sizes[0],
-                                                                                                featmap_sizes[1])
-        star_refine_reg_feat_pool_col = star_refine_reg_feat_pool_all[:, :, 1, :, :, :].reshape(batch, -1,
-                                                                                                featmap_sizes[0],
-                                                                                                featmap_sizes[1])
-        star_refine_reg_feat_pool_row = self.relu(
-            self.star_pool_reg_conv_refine_row(star_refine_reg_feat_pool_row) + reg_feat_refine)
-        star_refine_reg_feat_pool_col = self.relu(
-            self.star_pool_reg_conv_refine_col(star_refine_reg_feat_pool_col) + reg_feat_refine)
-        reg_out_refine_row = self.star_reg_refine_out_row(star_refine_reg_feat_pool_row)
-        reg_out_refine_col = self.star_reg_refine_out_col(star_refine_reg_feat_pool_col)
-        reg_out_refine = torch.stack(
-            (reg_out_refine_row[:, 0, :, :], reg_out_refine_col[:, 0, :, :], reg_out_refine_row[:, 1, :, :],
-             reg_out_refine_col[:, 1, :, :]), dim=1)
-        reg_out_refine_star = self.offset_to_stars(reg_out_init_star.detach(),
-                                                   reg_out_refine.permute(0, 2, 3, 1), img_metas,
-                                                   self.target_means_refine, self.target_stds_refine)  # stars
-        reg_out_init_bbox = self.star2bbox([], reg_out_init_star, img_metas[0], mode='xywxyhtox1y1x2y2')
-        reg_out_refine_bbox = self.star2bbox([], reg_out_refine_star, img_metas[0], mode='xywxyhtox1y1x2y2')
-
         if self.centerness_on_reg:
             centerness = self.conv_centerness(reg_feat)
         else:
             centerness = self.conv_centerness(cls_feat)
         # scale the bbox_pred of different level
         # float to avoid overflow when enabling FP16
-
         # bbox_pred = scale(bbox_pred).float()
         # if self.norm_on_bbox:
-        #     # bbox_pred = F.relu(bbox_pred)
+        #     bbox_pred = F.relu(bbox_pred)
         #     if not self.training:
         #         bbox_pred *= stride
         # else:
         #     bbox_pred = bbox_pred.exp()
-        return cls_out, centerness, reg_out_init, reg_out_refine, stars_init, reg_out_init_star,reg_out_refine_star,reg_out_init_bbox,reg_out_refine_bbox,valid_flag
-    def get_stars(self, featmap_sizes, img_metas, device,star_stride): #change,edit
-        """Get stars according to feature map sizes.
+            # starpooling,star feat
+            batch = x.size()[0]
+            channel = x.size()[1]
+            featmap_sizes = x.size()[-2:]
+            device = x[0].device
+            stars_init_list, valid_flag = self.get_stars(featmap_sizes,
+                                                         img_metas, device, stride)  # edit
+            stars_init = torch.stack(stars_init_list, dim=0)
+            # reg_feat_pre_pool = self.star_pool_reg_conv_pre_init(reg_feat)
+            # reg_feat_pre_pool = reg_feat * (F.sigmoid(reg_feat_pre_pool) * 1.0).exp()  # add
+            star_init_reg_feat_pool = star_pooling_layers_max(reg_feat, stars_init)
+            star_init_reg_feat_pool_all = star_init_reg_feat_pool.reshape(batch, int(channel / 1), 2,
+                                                                          self.pool_mode_num,
+                                                                          featmap_sizes[0], featmap_sizes[1])
+            star_init_reg_feat_pool_row = star_init_reg_feat_pool_all[:, :, 0, :, :, :].reshape(batch, -1,
+                                                                                                featmap_sizes[0],
+                                                                                                featmap_sizes[1])
+            star_init_reg_feat_pool_col = star_init_reg_feat_pool_all[:, :, 1, :, :, :].reshape(batch, -1,
+                                                                                                featmap_sizes[0],
+                                                                                                featmap_sizes[1])
+            # star_init_reg_feat_pool_row = self.relu(
+            #     self.star_pool_reg_conv_init_row(torch.cat((star_init_reg_feat_pool_row),dim=1))+reg_feat)
+            # star_init_reg_feat_pool_col = self.relu(
+            #     self.star_pool_reg_conv_init_col(torch.cat((star_init_reg_feat_pool_col),dim=1))+reg_feat)
+            star_init_reg_feat_pool_row = self.relu(
+                self.star_pool_reg_conv_init_row(star_init_reg_feat_pool_row) + reg_feat)
+            star_init_reg_feat_pool_col = self.relu(
+                self.star_pool_reg_conv_init_col(star_init_reg_feat_pool_col) + reg_feat)
+            reg_out_init_row = scale(self.star_reg_init_out_row(star_init_reg_feat_pool_row)).float()
+            reg_out_init_col = scale(self.star_reg_init_out_col(star_init_reg_feat_pool_col)).float()
+            reg_out_init = torch.stack((reg_out_init_row[:, 0, :, :], reg_out_init_col[:, 0, :, :],
+                                        reg_out_init_row[:, 1, :, :], reg_out_init_col[:, 1, :, :]), dim=1)
 
-        Args:
-            featmap_sizes (list[tuple]): Multi-level feature map sizes.
-            img_metas (list[dict]): Image meta info.
+            reg_out_init_star = self.offset_to_stars(stars_init.detach(),
+                                                     reg_out_init.permute(0, 2, 3, 1), img_metas,
+                                                     self.target_means_init, self.target_stds_init
+                                                     )
 
-        Returns:
-            tuple: stars of each image, valid flags of each image
-        """
-        num_imgs = len(img_metas)
-        stars = self.star_generators.grid_stars(featmap_sizes, star_stride, device)
-        stars_list = [stars.clone()  for _ in range(num_imgs)]
-        # for each image, we compute valid flags of multi level grids
-        valid_flag_list = []
-        for img_id, img_meta in enumerate(img_metas):
-            # multi_level_flags = []
-            feat_h, feat_w = featmap_sizes
-            h, w = img_meta['pad_shape'][:2]
-            valid_feat_h = min(int(np.ceil(h / star_stride)), feat_h)
-            valid_feat_w = min(int(np.ceil(w / star_stride)), feat_w)
-            flags = self.star_generators.valid_flags(
-                (feat_h, feat_w), (valid_feat_h, valid_feat_w), device)
-            valid_flag_list.append(flags)
+            cls_feat_pre_pool = self.star_pool_cls_conv_pre(cls_feat)
+            cls_feat_pre_pool = cls_feat_pre_pool * (F.sigmoid(cls_feat_pre_pool) * 1.0).exp()  # q
+            star_init_cls_feat_pool = star_pooling_layers_sum(cls_feat_pre_pool, reg_out_init_star)
+            star_init_cls_feat_pool_all = star_init_cls_feat_pool.reshape(batch, int(channel / 2), 2,
+                                                                          self.pool_mode_num,
+                                                                          featmap_sizes[0],
+                                                                          featmap_sizes[1])
+            star_init_cls_feat_pool_row = star_init_cls_feat_pool_all[:, :, 0, :, :, :].reshape(batch, -1,
+                                                                                                featmap_sizes[0],
+                                                                                                featmap_sizes[1])
+            star_init_cls_feat_pool_col = star_init_cls_feat_pool_all[:, :, 1, :, :, :].reshape(batch, -1,
+                                                                                                featmap_sizes[0],
+                                                                                                featmap_sizes[1])
+            star_init_cls_feat_pool = self.relu(
+                self.star_pool_cls_conv(
+                    torch.cat((star_init_cls_feat_pool_row, star_init_cls_feat_pool_col), dim=1)) + cls_feat)
+            cls_out = self.star_cls_out(star_init_cls_feat_pool)
+            centerness = self.atss_centerness(reg_feat)
 
-        return stars_list, valid_flag_list
-    def offset_to_stars(self, star_init, pred_offset,img_metas,target_means,target_stds):
-        """Change from star offset to star coordinate."""
-        # means = pred_offset.new_tensor(self.target_means).view(1, -1).repeat(1, pred_offset.size(1) // 4)
-        # stds = pred_offset.new_tensor(self.target_stds).view(1, -1).repeat(1, pred_offset.size(1) // 4)
-        means=pred_offset.new_tensor(target_means)
-        stds = pred_offset.new_tensor(target_stds)
-        pred_offset=pred_offset*stds+means
-        init_x_row = star_init[..., 0]
-        init_y_row = star_init[..., 1]
-        init_w = star_init[..., 2]
-        init_x_col = star_init[..., 3]
-        init_y_col = star_init[..., 4]
-        init_h = star_init[..., 5]
-        pre_off_x = pred_offset[..., 0]
-        pre_off_y = pred_offset[..., 1]
-        pre_off_w = pred_offset[..., 2]
-        pre_off_h = pred_offset[..., 3]
-
-        star_w = init_w * pre_off_w.exp()
-        star_h = init_h * pre_off_h.exp()
-        star_xc_row = init_x_row + init_w * pre_off_x # x center for row
-        star_yc_row = init_y_row   # y center for row
-        star_xc_col = init_x_col # x center for col
-        star_yc_col = init_y_col + init_h * pre_off_y  # y center for col
-        # max_shape = img_metas[0]['img_shape']
-        # if max_shape is not None:
-        #     star_xc_row = star_xc_row.clamp(min=0, max=max_shape[1])
-        #     star_yc_row = star_yc_row.clamp(min=0, max=max_shape[1])
-        #     star_w = star_w.clamp(min=0, max=max_shape[1])
-        #     star_xc_col = star_xc_col.clamp(min=0, max=max_shape[0])
-        #     star_yc_col = star_yc_col.clamp(min=0, max=max_shape[0])
-        #     star_h = star_h.clamp(min=0, max=max_shape[0])
-        stars = torch.stack([star_xc_row, star_yc_row, star_w, star_xc_col, star_yc_col,star_h], dim=-1)
-
-
-        # x1 = stars_xc_row - stars[:, 2] * 0.5
-        # # y1 = stars[:, 4] - stars[:, 5] * 0.5
-        # x2 = stars[:, 0] + stars[:, 2] * 0.5
-        # y2 = stars[:, 4] + stars[:, 5] * 0.5
-
-        # print('=======================================================================================')
-        # print('pred_offset:', pred_offset)
-        # print('stars:', stars)
-        return stars
-    def convertstars(self, star_init,img_metas):
-        """Change from star offset to star coordinate."""
-        # means = pred_offset.new_tensor(self.target_means).view(1, -1).repeat(1, pred_offset.size(1) // 4)
-        # stds = pred_offset.new_tensor(self.target_stds).view(1, -1).repeat(1, pred_offset.size(1) // 4)
-        init_x_row = star_init[..., 0]
-        init_y_row = star_init[..., 1]
-        init_w = star_init[..., 2]
-        init_x_col = star_init[..., 3]
-        init_y_col = star_init[..., 4]
-        init_h = star_init[..., 5]
-        init_x1_row = init_x_row-0.5*init_w
-        init_x2_row = init_x_row + 0.5 * init_w
-        init_y_row=init_y_row
-        init_x_col=init_x_col
-        init_y1_col=init_y_col-0.5*init_h
-        init_y2_col = init_y_col + 0.5 * init_h
-        max_shape = img_metas[0]['img_shape']
-        if max_shape is not None:
-            init_x1_row = init_x1_row.clamp(min=0, max=max_shape[1])
-            init_x2_row = init_x2_row.clamp(min=0, max=max_shape[1])
-            init_y_row = init_y_row.clamp(min=0, max=max_shape[0])
-            init_x_col = init_x_col.clamp(min=0, max=max_shape[1])
-            init_y1_col = init_y1_col.clamp(min=0, max=max_shape[0])
-            init_y2_col = init_y2_col.clamp(min=0, max=max_shape[0])
-
-        stars = torch.stack([init_x1_row, init_x2_row, init_y_row, init_x_col, init_y1_col,init_y2_col], dim=-1)
-
-
-        # x1 = stars_xc_row - stars[:, 2] * 0.5
-        # # y1 = stars[:, 4] - stars[:, 5] * 0.5
-        # x2 = stars[:, 0] + stars[:, 2] * 0.5
-        # y2 = stars[:, 4] + stars[:, 5] * 0.5
-
-        # print('=======================================================================================')
-        # print('pred_offset:', pred_offset)
-        # print('stars:', stars)
-        return stars
-
-    def stars_to_offset(self, predict_stars, gt_bboxes,target_means,target_stds):
-        """Change from star offset to star coordinate."""
-
-        gt_x1 = gt_bboxes[:, 0]
-        gt_y1 = gt_bboxes[:, 1]
-        gt_x2 = gt_bboxes[:, 2]
-        gt_y2 = gt_bboxes[:, 3]
-        gt_xc = (gt_x1+gt_x2)*0.5
-        gt_yc = (gt_y1+gt_y2)*0.5
-        gt_w = gt_x2 - gt_x1
-        gt_h = gt_y2 - gt_y1
-        pre_xc_row = predict_stars[:, 0]
-        pre_yc_row = predict_stars[:, 1]
-        pre_w = predict_stars[:, 2]
-        pre_xc_col = predict_stars[:, 3]
-        pre_yc_col = predict_stars[:, 4]
-        pre_h = predict_stars[:, 5]
-        delta_x = (gt_xc - pre_xc_row) / pre_w
-        delta_y = (gt_yc - pre_yc_col) / pre_h
-        delta_w = torch.log(gt_w/pre_w)
-        delta_h = torch.log(gt_h/pre_h)
-        delta_bboxes = torch.stack([delta_x,delta_y,delta_w,delta_h],dim=-1)
-        means = delta_bboxes.new_tensor(target_means)
-        stds = delta_bboxes.new_tensor(target_stds)
-        delta_bboxes = delta_bboxes.sub_(means).div_(stds)
-        # print('delta_bboxes:', delta_bboxes)
-        return delta_bboxes
-    def star2bbox(self,bboxes,stars,img_metas,mode='x1y1x2y2toxywxyh'):
-        if mode =='x1y1x2y2toxywxyh':
-            stars_x_w=(bboxes[...,0]+bboxes[...,2])*0.5
-            stars_y_w=(bboxes[...,1]+bboxes[...,3])*0.5
-            stars_x_h=stars_x_w
-            stars_y_h=stars_y_w
-            stars_w=bboxes[...,2]-bboxes[...,0]
-            stars_h=bboxes[...,3]-bboxes[...,1]
-            return torch.stack([stars_x_w,stars_y_w,stars_w,stars_x_h,stars_y_h,stars_h],dim=-1)
-        if mode == 'xywxyhtox1y1x2y2':
-            x1=stars[...,0]-stars[...,2]*0.5
-            y1=stars[...,4]-stars[...,5]*0.5
-            x2=stars[...,0]+stars[...,2]*0.5
-            y2 = stars[..., 4] + stars[..., 5] * 0.5
-            y_row=stars[...,1]
-            x_col = stars[..., 3]
-            # if ((x_col<x1) or (x_col>x2) or (y_row<y1) or (y_row>y2)):
-            #     x1=torch.zeros_like(x1)
-            #     x2 = torch.zeros_like(x2)
-            #     y1 = torch.zeros_like(y1)
-            #     y2 = torch.zeros_like(y2)
-            # x1=torch.where(x1<=x_col,x1,torch.zeros_like(x1))
-            # x1 = torch.where(x1 <= x_col, x1, torch.zeros_like(x1))
-            max_shape=img_metas['img_shape']
-            if max_shape is not None:
-                x1 = x1.clamp(min=0, max=max_shape[1])
-                y1 = y1.clamp(min=0, max=max_shape[0])
-                x2 = x2.clamp(min=0, max=max_shape[1])
-                y2 = y2.clamp(min=0, max=max_shape[0])
-            bbox=torch.stack([x1,y1,x2,y2],dim=-1)
-            return bbox
+            reg_feat_refine = self.star_reg_refine_conv(reg_feat)
+            reg_feat_pre_pool_refine = reg_feat_refine * (F.sigmoid(reg_feat_refine) * 1.0).exp()
+            # reg_feat_pre_pool_refine = self.star_pool_reg_conv_pre_refine(reg_feat_refine)
+            star_refine_reg_feat_pool = star_pooling_layers_sum(reg_feat_pre_pool_refine, reg_out_init_star)
+            star_refine_reg_feat_pool_all = star_refine_reg_feat_pool.reshape(batch, int(channel / 1), 2,
+                                                                              self.pool_mode_num, featmap_sizes[0],
+                                                                              featmap_sizes[1])
+            star_refine_reg_feat_pool_row = star_refine_reg_feat_pool_all[:, :, 0, :, :, :].reshape(batch, -1,
+                                                                                                    featmap_sizes[0],
+                                                                                                    featmap_sizes[1])
+            star_refine_reg_feat_pool_col = star_refine_reg_feat_pool_all[:, :, 1, :, :, :].reshape(batch, -1,
+                                                                                                    featmap_sizes[0],
+                                                                                                    featmap_sizes[1])
+            # star_refine_reg_feat_pool_row = self.relu(
+            #     self.star_pool_reg_conv_refine_row(torch.cat((star_refine_reg_feat_pool_row),dim=1))+reg_feat)
+            # star_refine_reg_feat_pool_col = self.relu(
+            #     self.star_pool_reg_conv_refine_col(torch.cat((star_refine_reg_feat_pool_col),dim=1))+reg_feat)
+            star_refine_reg_feat_pool_row = self.relu(
+                self.star_pool_reg_conv_refine_row(star_refine_reg_feat_pool_row) + reg_feat_refine)
+            star_refine_reg_feat_pool_col = self.relu(
+                self.star_pool_reg_conv_refine_col(star_refine_reg_feat_pool_col) + reg_feat_refine)
+            reg_out_refine_row = self.star_reg_refine_out_row(star_refine_reg_feat_pool_row)
+            reg_out_refine_col = self.star_reg_refine_out_col(star_refine_reg_feat_pool_col)
+            reg_out_refine = torch.stack(
+                (reg_out_refine_row[:, 0, :, :], reg_out_refine_col[:, 0, :, :], reg_out_refine_row[:, 1, :, :],
+                 reg_out_refine_col[:, 1, :, :]), dim=1)
+            reg_out_refine_star = self.offset_to_stars(reg_out_init_star.detach(),
+                                                       reg_out_refine.permute(0, 2, 3, 1), img_metas,
+                                                       self.target_means_refine, self.target_stds_refine)  # stars
+            stars_init_bbox = self.star2bbox([], stars_init, img_metas[0], mode='x1x2yxy1y2tox1y1x2y2', clip=False)
+            reg_out_init_bbox = self.star2bbox([], reg_out_init_star, img_metas[0], mode='x1x2yxy1y2tox1y1x2y2',
+                                               clip=True)
+            reg_out_refine_bbox = self.star2bbox([], reg_out_refine_star, img_metas[0], mode='x1x2yxy1y2tox1y1x2y2',
+                                                 clip=True)
+        return cls_score, bbox_pred, centerness
 
     @force_fp32(apply_to=('cls_scores', 'bbox_preds', 'centernesses'))
     def loss(self,
              cls_scores,
+             bbox_preds_init,
+             bbox_preds_refine,
              centernesses,
-             reg_out_init,
-             reg_out_refine,
-             stars_init,
-             reg_out_init_star,
-             reg_out_refine_star,
+             stars_init_bbox,
              reg_out_init_bbox,
              reg_out_refine_bbox,
-             valid_flag,
+             valid_flag_list,
              gt_bboxes,
              gt_labels,
              img_metas,
@@ -451,12 +358,12 @@ class FCOSHead(AnchorFreeHead):
         Returns:
             dict[str, Tensor]: A dictionary of loss components.
         """
-        assert len(cls_scores) == len(reg_out_init) == len(centernesses)
+        assert len(cls_scores) == len(bbox_preds_init) == len(centernesses)
         featmap_sizes = [featmap.size()[-2:] for featmap in cls_scores]
+        anchor_list = stars_init_bbox
         # all_level_points = self.get_points(featmap_sizes, bbox_preds[0].dtype,
         #                                    bbox_preds[0].device)
-        candidate_list = stars_init
-        labels, bbox_targets = self.get_targets(candidate_list,gt_bboxes,
+        labels, bbox_targets = self.get_targets(anchor_list, gt_bboxes,
                                                 gt_labels)
 
         num_imgs = cls_scores[0].size(0)
@@ -466,10 +373,9 @@ class FCOSHead(AnchorFreeHead):
             for cls_score in cls_scores
         ]
         flatten_bbox_preds = [
-            bbox_pred.reshape(-1, 4)
-            for bbox_pred in reg_out_refine_bbox
+            bbox_pred.permute(0, 2, 3, 1).reshape(-1, 4)
+            for bbox_pred in bbox_preds
         ]
-
         flatten_centerness = [
             centerness.permute(0, 2, 3, 1).reshape(-1)
             for centerness in centernesses
@@ -498,14 +404,14 @@ class FCOSHead(AnchorFreeHead):
         if num_pos > 0:
             pos_bbox_targets = flatten_bbox_targets[pos_inds]
             pos_centerness_targets = self.centerness_target(pos_bbox_targets)
-            # pos_points = flatten_points[pos_inds]
+            pos_points = flatten_points[pos_inds]
             # pos_decoded_bbox_preds = distance2bbox(pos_points, pos_bbox_preds)
             # pos_decoded_target_preds = distance2bbox(pos_points,
             #                                          pos_bbox_targets)
             # centerness weighted iou loss
             loss_bbox = self.loss_bbox(
-                pos_bbox_preds,
-                pos_bbox_targets,
+                pos_decoded_bbox_preds,
+                pos_decoded_target_preds,
                 weight=pos_centerness_targets,
                 avg_factor=pos_centerness_targets.sum())
             loss_centerness = self.loss_centerness(pos_centerness,
@@ -679,7 +585,7 @@ class FCOSHead(AnchorFreeHead):
                              dim=-1) + stride // 2
         return points
 
-    def get_targets(self, stars, gt_bboxes_list, gt_labels_list):
+    def get_targets(self, points, gt_bboxes_list, gt_labels_list):
         """Compute regression, classification and centerss targets for points
         in multiple images.
 
@@ -697,19 +603,19 @@ class FCOSHead(AnchorFreeHead):
                 concat_lvl_bbox_targets (list[Tensor]): BBox targets of each \
                     level.
         """
-        assert len(stars) == len(self.regress_ranges)
-        num_levels = len(stars)
+        assert len(points) == len(self.regress_ranges)
+        num_levels = len(points)
         # expand regress ranges to align with points
         expanded_regress_ranges = [
-            stars[i].new_tensor(self.regress_ranges[i])[None].expand_as(
-                stars[i]) for i in range(num_levels)
+            points[i].new_tensor(self.regress_ranges[i])[None].expand_as(
+                points[i]) for i in range(num_levels)
         ]
         # concat all levels points and regress ranges
         concat_regress_ranges = torch.cat(expanded_regress_ranges, dim=0)
-        concat_points = torch.cat(stars, dim=0)
+        concat_points = torch.cat(points, dim=0)
 
         # the number of points per img, per lvl
-        num_stars = [center.size(0) for center in stars]
+        num_points = [center.size(0) for center in points]
 
         # get labels and bbox_targets of each image
         labels_list, bbox_targets_list = multi_apply(
@@ -718,12 +624,12 @@ class FCOSHead(AnchorFreeHead):
             gt_labels_list,
             points=concat_points,
             regress_ranges=concat_regress_ranges,
-            num_points_per_lvl=num_stars)
+            num_points_per_lvl=num_points)
 
         # split to per img, per level
-        labels_list = [labels.split(num_stars, 0) for labels in labels_list]
+        labels_list = [labels.split(num_points, 0) for labels in labels_list]
         bbox_targets_list = [
-            bbox_targets.split(num_stars, 0)
+            bbox_targets.split(num_points, 0)
             for bbox_targets in bbox_targets_list
         ]
 
@@ -740,35 +646,32 @@ class FCOSHead(AnchorFreeHead):
             concat_lvl_bbox_targets.append(bbox_targets)
         return concat_lvl_labels, concat_lvl_bbox_targets
 
-    def _get_target_single(self, gt_bboxes, gt_labels, stars, regress_ranges,
+    def _get_target_single(self, gt_bboxes, gt_labels, points, regress_ranges,
                            num_points_per_lvl):
         """Compute regression and classification targets for a single image."""
-        num_stars = stars.size(0)
+        num_points = points.size(0)
         num_gts = gt_labels.size(0)
         if num_gts == 0:
-            return gt_labels.new_full((num_stars,), self.num_classes), \
-                   gt_bboxes.new_zeros((num_stars, 4))
+            return gt_labels.new_full((num_points,), self.num_classes), \
+                   gt_bboxes.new_zeros((num_points, 4))
 
         areas = (gt_bboxes[:, 2] - gt_bboxes[:, 0]) * (
             gt_bboxes[:, 3] - gt_bboxes[:, 1])
         # TODO: figure out why these two are different
         # areas = areas[None].expand(num_points, num_gts)
-        areas = areas[None].repeat(num_stars, 1)
+        areas = areas[None].repeat(num_points, 1)
         regress_ranges = regress_ranges[:, None, :].expand(
-            num_stars, num_gts, 2)
-        gt_bboxes = gt_bboxes[None].expand(num_stars, num_gts, 4)
+            num_points, num_gts, 2)
+        gt_bboxes = gt_bboxes[None].expand(num_points, num_gts, 4)
+        xs, ys = points[:, 0], points[:, 1]
+        xs = xs[:, None].expand(num_points, num_gts)
+        ys = ys[:, None].expand(num_points, num_gts)
 
-        xs = (stars[:, 0]+stars[:, 1])*0.5
-        ys = (stars[:, 4]+stars[:, 5])*0.5
-
-        xs = xs[:, None].expand(num_stars, num_gts)
-        ys = ys[:, None].expand(num_stars, num_gts)
-
-        # left = xs - gt_bboxes[..., 0]
-        # right = gt_bboxes[..., 2] - xs
-        # top = ys - gt_bboxes[..., 1]
-        # bottom = gt_bboxes[..., 3] - ys
-        bbox_targets = torch.stack((gt_bboxes[..., 0], gt_bboxes[..., 1], gt_bboxes[..., 2], gt_bboxes[..., 3]), -1)
+        left = xs - gt_bboxes[..., 0]
+        right = gt_bboxes[..., 2] - xs
+        top = ys - gt_bboxes[..., 1]
+        bottom = gt_bboxes[..., 3] - ys
+        bbox_targets = torch.stack((left, top, right, bottom), -1)
 
         if self.center_sampling:
             # condition1: inside a `center bbox`
@@ -823,7 +726,7 @@ class FCOSHead(AnchorFreeHead):
 
         labels = gt_labels[min_area_inds]
         labels[min_area == INF] = self.num_classes  # set as BG
-        bbox_targets = bbox_targets[range(num_stars), min_area_inds]
+        bbox_targets = bbox_targets[range(num_points), min_area_inds]
 
         return labels, bbox_targets
 

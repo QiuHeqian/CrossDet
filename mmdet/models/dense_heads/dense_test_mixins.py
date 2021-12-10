@@ -64,8 +64,10 @@ class BBoxTestMixin(object):
         aug_scores = []
         aug_factors = []  # score_factors for NMS
         for x, img_meta in zip(feats, img_metas):
+            num_lvl = len(x)
+            img_metas_lvl = [img_meta] * num_lvl
             # only one image in the batch
-            outs = self.forward(x)
+            outs = self.forward(x,img_metas_lvl)
             bbox_inputs = outs + (img_meta, self.test_cfg, False, False)
             bbox_outputs = self.get_bboxes(*bbox_inputs)[0]
             aug_bboxes.append(bbox_outputs[0])

@@ -46,11 +46,11 @@ class BaseDenseHead(nn.Module, metaclass=ABCMeta):
                 losses: (dict[str, Tensor]): A dictionary of loss components.
                 proposal_list (list[Tensor]): Proposals of each image.
         """
-        outs = self(x) #orig
+        # outs = self(x) #orig
 
-        # num_lvl=len(x)
-        # img_metas_lvl=[img_metas]*num_lvl
-        # outs = self(x,img_metas_lvl) #qhq
+        num_lvl=len(x)
+        img_metas_lvl=[img_metas]*num_lvl
+        outs = self(x,img_metas_lvl) #qhq
         if gt_labels is None:
             loss_inputs = outs + (gt_bboxes, img_metas)
         else:

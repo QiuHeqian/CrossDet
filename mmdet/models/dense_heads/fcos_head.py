@@ -385,7 +385,7 @@ class FCOSHead(AnchorFreeHead):
         # BG cat_id: num_class
         mlvl_scores = torch.cat([mlvl_scores, padding], dim=1)
         mlvl_centerness = torch.cat(mlvl_centerness)
-        # with_nms=False
+
         if with_nms:
             det_bboxes, det_labels = multiclass_nms(
                 mlvl_bboxes,
@@ -396,7 +396,7 @@ class FCOSHead(AnchorFreeHead):
                 score_factors=mlvl_centerness)
             return det_bboxes, det_labels
         else:
-            return mlvl_bboxes, mlvl_scores#, mlvl_centerness #qhq
+            return mlvl_bboxes, mlvl_scores, mlvl_centerness
 
     def _get_points_single(self,
                            featmap_size,

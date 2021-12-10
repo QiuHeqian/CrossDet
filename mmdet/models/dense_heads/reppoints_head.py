@@ -554,7 +554,8 @@ class RepPointsHead(AnchorFreeHead):
         bbox_weights_refine = bbox_weights_refine.reshape(-1, 4)
         bbox_pred_refine = self.points2bbox(
             pts_pred_refine.reshape(-1, 2 * self.num_points), y_first=False)
-        normalize_term = self.point_base_scale * stride
+        # normalize_term = self.point_base_scale * stride
+        normalize_term = 1.0
         loss_pts_init = self.loss_bbox_init(
             bbox_pred_init / normalize_term,
             bbox_gt_init / normalize_term,

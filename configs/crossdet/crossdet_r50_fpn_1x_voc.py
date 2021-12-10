@@ -1,4 +1,3 @@
-norm_cfg = dict(type='GN', num_groups=32, requires_grad=True)
 model = dict(
     type='CrossDet',
     pretrained='torchvision://resnet50',
@@ -16,7 +15,6 @@ model = dict(
         in_channels=[256, 512, 1024, 2048],
         out_channels=256,
         start_level=1,
-        norm_cfg=norm_cfg, 
         add_extra_convs='on_output',
         num_outs=5),
     bbox_head=dict(
@@ -25,6 +23,9 @@ model = dict(
         in_channels=256,
         stacked_convs=4,
         feat_channels=256,
+        center_sampling=True,
+        center_sample_radius=1.5,
+        norm_on_bbox=False,
         target_means_init=[.0, .0, .0, .0],
         target_stds_init=[0.1, 0.1, 0.2, 0.2],
         target_means_refine=[.0, .0, .0, .0],
@@ -62,7 +63,7 @@ test_cfg = dict(
     nms=dict(type='nms', iou_threshold=0.6),
     max_per_img=100)
 dataset_type = 'CocoDataset'
-data_root = '/data/datasets/VOCdevkit/'
+data_root = '/data/dataset/VOC/'
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 train_pipeline = [
@@ -95,10 +96,10 @@ data = dict(
     workers_per_gpu=2,
     train=dict(
         type=dataset_type,
-        ann_file=[data_root + 'VOC2007/json_annotations/pascal_train2007.json',
-                  data_root + 'VOC2007/json_annotations/pascal_val2007.json',
-                  data_root + 'VOC2012/json_annotations/pascal_train2012.json',
-                  data_root + 'VOC2012/json_annotations/pascal_val2012.json',
+        ann_file=[data_root + 'VOC2007/annotations/voc_2007_train.json',
+                  data_root + 'VOC2007/annotations/voc_2007_val.json',
+                  data_root + 'VOC2012/annotations/voc_2012_train.json',
+                  data_root + 'VOC2012/annotations/voc_2012_val.json',
                   ],
         img_prefix=[data_root + 'VOC2007/JPEGImages/',
                     data_root + 'VOC2007/JPEGImages/',
@@ -108,12 +109,12 @@ data = dict(
         pipeline=train_pipeline),
     val=dict(
         type=dataset_type,
-        ann_file=data_root + 'VOC2007/json_annotations/pascal_test2007.json',
+        ann_file=data_root + 'VOC2007/annotations/voc_2007_test.json',
         img_prefix=data_root + 'VOC2007/JPEGImages/',
         pipeline=test_pipeline),
     test=dict(
         type=dataset_type,
-        ann_file=data_root + 'VOC2007/json_annotations/pascal_test2007.json',
+        ann_file=data_root + 'VOC2007/annotations/voc_2007_test.json',
         img_prefix=data_root + 'VOC2007/JPEGImages/',
         pipeline=test_pipeline))
 evaluation = dict(interval=1, metric='bbox')

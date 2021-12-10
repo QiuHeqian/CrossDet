@@ -1,7 +1,5 @@
-# dataset_type = 'CocoDataset'
-# data_root = 'data/coco/'
 dataset_type = 'CocoDataset'
-data_root = '/data/datasets/VOCdevkit/'
+data_root = 'data/coco/'
 img_norm_cfg = dict(
     mean=[123.675, 116.28, 103.53], std=[58.395, 57.12, 57.375], to_rgb=True)
 train_pipeline = [
@@ -34,33 +32,17 @@ data = dict(
     workers_per_gpu=2,
     train=dict(
         type=dataset_type,
-        ann_file=[data_root + 'VOC2007/json_annotations/pascal_train2007.json',
-                  data_root + 'VOC2007/json_annotations/pascal_val2007.json',
-                  data_root + 'VOC2012/json_annotations/pascal_train2012.json',
-                  data_root + 'VOC2012/json_annotations/pascal_val2012.json',
-                  ],
-        img_prefix=[data_root + 'VOC2007/JPEGImages/',
-                    data_root + 'VOC2007/JPEGImages/',
-                    data_root + 'VOC2012/JPEGImages/',
-                    data_root + 'VOC2012/JPEGImages/',
-                    ],
-        # ann_file=[data_root + 'annotations/instances_train2017.json',
-        #           ],
-        # img_prefix=[data_root + 'images/train2017/',
-        #             ],
+        ann_file=data_root + 'annotations/instances_train2017.json',
+        img_prefix=data_root + 'train2017/',
         pipeline=train_pipeline),
     val=dict(
         type=dataset_type,
-        ann_file=data_root + 'VOC2007/json_annotations/pascal_test2007.json',
-        img_prefix=data_root + 'VOC2007/JPEGImages/',
-        # ann_file=data_root + 'annotations/instances_val2017.json',
-        # img_prefix=data_root + 'images/val2017/',
+        ann_file=data_root + 'annotations/instances_val2017.json',
+        img_prefix=data_root + 'val2017/',
         pipeline=test_pipeline),
     test=dict(
         type=dataset_type,
-        ann_file=data_root + 'VOC2007/json_annotations/pascal_test2007.json',
-        img_prefix=data_root + 'VOC2007/JPEGImages/',
-        # ann_file=data_root + 'annotations/instances_val2017.json',
-        # img_prefix=data_root + 'images/val2017/',
+        ann_file=data_root + 'annotations/instances_val2017.json',
+        img_prefix=data_root + 'val2017/',
         pipeline=test_pipeline))
 evaluation = dict(interval=1, metric='bbox')

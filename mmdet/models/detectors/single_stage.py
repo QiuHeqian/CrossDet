@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from mmdet.core import bbox2result,bboxstar2result
+from mmdet.core import bbox2result
 from ..builder import DETECTORS, build_backbone, build_head, build_neck
 from .base import BaseDetector
 
@@ -95,7 +95,7 @@ class SingleStageDetector(BaseDetector):
                                               gt_labels, gt_bboxes_ignore)
         return losses
 
-    def simple_test(self, img, img_metas,rescale=False):
+    def simple_test(self, img, img_metas, rescale=False):
         """Test function without test time augmentation.
 
         Args:
@@ -120,13 +120,9 @@ class SingleStageDetector(BaseDetector):
         if torch.onnx.is_in_onnx_export():
             return bbox_list
 
-        # bbox_results = [
-        #     bbox2result(det_bboxes, det_labels, self.bbox_head.num_classes)
-        #     for det_bboxes, det_labels in bbox_list
-        # ]
         bbox_results = [
-            bboxstar2result(det_bboxes, det_labels, det_stars, self.bbox_head.num_classes)
-            for det_bboxes, det_labels, det_stars in bbox_list
+            bbox2result(det_bboxes, det_labels, self.bbox_head.num_classes)
+            for det_bboxes, det_labels in bbox_list
         ]
         return bbox_results
 

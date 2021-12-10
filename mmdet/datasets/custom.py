@@ -60,7 +60,6 @@ class CustomDataset(Dataset):
                  seg_prefix=None,
                  proposal_file=None,
                  test_mode=False,
-                 get_ann_at_test_mode=False,
                  filter_empty_gt=True):
         self.ann_file = ann_file
         self.data_root = data_root
@@ -69,7 +68,6 @@ class CustomDataset(Dataset):
         self.proposal_file = proposal_file
         self.test_mode = test_mode
         self.filter_empty_gt = filter_empty_gt
-        self.get_ann_at_test_mode=get_ann_at_test_mode
         self.CLASSES = self.get_classes(classes)
 
         # join paths if data_root is specified
@@ -190,7 +188,6 @@ class CustomDataset(Dataset):
 
         if self.test_mode:
             return self.prepare_test_img(idx)
-            # return self.prepare_train_img(idx)
         while True:
             data = self.prepare_train_img(idx)
             if data is None:
@@ -217,7 +214,6 @@ class CustomDataset(Dataset):
         self.pre_pipeline(results)
         return self.pipeline(results)
 
-    # def prepare_test_img(self, idx):
     def prepare_test_img(self, idx):
         """Get testing data  after pipeline.
 
@@ -230,13 +226,7 @@ class CustomDataset(Dataset):
         """
 
         img_info = self.data_infos[idx]
-        if self.get_ann_at_test_mode:
-            ann_info = self.get_ann_info(idx)
-
-            results = dict(img_info=img_info,ann_info=ann_info)
-        else:
-            results = dict(img_info=img_info)
-        # results = dict(img_info=img_info)
+        results = dict(img_info=img_info)
         if self.proposals is not None:
             results['proposals'] = self.proposals[idx]
         self.pre_pipeline(results)

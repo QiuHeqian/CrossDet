@@ -114,27 +114,6 @@ def bbox2result(bboxes, labels, num_classes):
             bboxes = bboxes.detach().cpu().numpy()
             labels = labels.detach().cpu().numpy()
         return [bboxes[labels == i, :] for i in range(num_classes)]
-def bboxstar2result(bboxes, labels,stars, num_classes):
-    """Convert detection results to a list of numpy arrays.
-
-    Args:
-        bboxes (torch.Tensor | np.ndarray): shape (n, 5)
-        labels (torch.Tensor | np.ndarray): shape (n, )
-        num_classes (int): class number, including background class
-
-    Returns:
-        list(ndarray): bbox results of each class
-    """
-    if bboxes.shape[0] == 0:
-        return [np.zeros((0, 11), dtype=np.float32) for i in range(num_classes)]
-    else:
-        if isinstance(bboxes, torch.Tensor):
-            bboxes_stars=torch.cat([bboxes,stars],dim=1)
-            bboxes_stars = bboxes_stars.detach().cpu().numpy()
-            # stars = stars.detach().cpu().numpy()
-            labels = labels.detach().cpu().numpy()
-        return [bboxes_stars[labels == i, :] for i in range(num_classes)]
-
 
 
 def distance2bbox(points, distance, max_shape=None):
