@@ -27,3 +27,14 @@ cause incorrect detection results. In this paper, we propose a novel anchor-free
 ```
 ## Acknowledgement
 Thanks MMDetection team for the wonderful open source project!
+
+## Citition
+If you use this code in your research, please cite this project.
+@inproceedings{qiu2021crossdet,
+  title={CrossDet: Crossline Representation for Object Detection},
+  author={Qiu, Heqian and Li, Hongliang and Wu, Qingbo and Cui, Jianhua and Song, Zichen and Wang, Lanxiao and Zhang, Minjian},
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
+  pages={3195--3204},
+  year={2021}
+}
+
