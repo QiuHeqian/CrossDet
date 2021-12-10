@@ -20,13 +20,13 @@ python setup.py develop
 ```
 # assume that you are under the root directory of this project,
 # and you have activated your virtual environment if needed.
-# and with COCO dataset in 'data/coco/'.
+# and with COCO dataset in 'data/dataset/coco/'.
 ./tools/dist_train.sh configs/crossdet/crossdet_r50_fpn_1x_coco.py 8
 ```
 ```
 # assume that you are under the root directory of this project,
 # and you have activated your virtual environment if needed.
-# and with VOC dataset in 'data/VOCdevkit/'.
+# and with VOC dataset in 'data/dataset/VOCdevkit/'.
 ./tools/dist_train.sh configs/crossdet/crossdet_r50_fpn_1x_voc.py 8
 ```
 
