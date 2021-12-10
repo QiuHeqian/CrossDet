@@ -28,12 +28,12 @@ boxes or a set of points to represent objects. However, these methods either int
 Thanks MMDetection team for the wonderful open source project!
 
 ## Citition
-If you use this code in your research, please cite this project.
-@inproceedings{qiu2021crossdet,
-  title={CrossDet: Crossline Representation for Object Detection},
-  author={Qiu, Heqian and Li, Hongliang and Wu, Qingbo and Cui, Jianhua and Song, Zichen and Wang, Lanxiao and Zhang, Minjian},
-  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},
-  pages={3195--3204},
-  year={2021}
-}
+If you use this code in your research, please cite this project.  
+@inproceedings{qiu2021crossdet,  
+  title={CrossDet: Crossline Representation for Object Detection},  
+  author={Qiu, Heqian and Li, Hongliang and Wu, Qingbo and Cui, Jianhua and Song, Zichen and Wang, Lanxiao and Zhang, Minjian},  
+  booktitle={Proceedings of the IEEE/CVF International Conference on Computer Vision},  
+  pages={3195--3204},  
+  year={2021}  
+}  
 
