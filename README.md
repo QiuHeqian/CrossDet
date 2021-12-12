@@ -38,7 +38,7 @@ python setup.py develop
 Thanks MMDetection team for the wonderful open source project!
 
 ## Citition
-If you use this code in your research, please cite this project.  
+If you find CrossDet useful in your research, please consider citing:  
 ```
 @inproceedings{qiu2021crossdet,  
   title={CrossDet: Crossline Representation for Object Detection},  
